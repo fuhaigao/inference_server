@@ -1,0 +1,14 @@
+[package]
+name = "inference_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+candle = { version = "0.3.1", package = "candle-core" }
+candle-transformers = "0.3.1"
+candle-nn = "0.3.1"
+tokenizers = "0.15.0"
+hf-hub = "0.3.2"
+anyhow = "1.0.75"
+serde_json = "1.0.107"
+actix-web
