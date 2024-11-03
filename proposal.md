@@ -1,5 +1,8 @@
 # Project Proposal: Large Language Model Serving
 
+Fuhai Gao
+1003887065
+
 ## Motivation
 
 Large language models (LLMs) have gained significant attention for their ability to process and generate natural language, enabling applications across industries in fields like customer service, content creation, and knowledge management. However, most existing LLM-serving solutions are implemented in Python, which, while widely adopted, can impose performance limitations due to its interpreted nature and runtime dependencies.
@@ -36,41 +39,41 @@ The main objective is to develop an LLM inference server using Rust and Candle t
 To achieve this objective, the following key features will be implemented:
 
 1. **Multi-Model Management**
-    
+
     The inference server will be capable of loading and managing multiple large language models simultaneously. This feature will enable users to serve multiple models or versions based on different application requirements, providing versatility and reducing response times by preloading models.
-    
+
 2. **API Endpoints**
-    
+
     A core feature of the server is an API layer that exposes multiple endpoints, allowing clients to send inputs to the models and receive processed outputs. This API will support several types of requests, including simple text-based inputs for standard LLM tasks and more complex inputs for optional features like image generation.
-    
+
 3. **Streaming Support**
-    
+
     Many LLM applications benefit from real-time response streaming, especially for large outputs or ongoing interactions. The server will incorporate streaming capabilities, allowing responses to be delivered progressively as they are generated. This feature creates a more interactive experience for applications that rely on real-time outputs.
-    
+
 4. **Basic Chat Interface**
-    
+
     To demonstrate the server’s capabilities, a basic chat interface will be created. This interface will allow users to interact with the models through simple, conversational prompts, simulating a chat-based LLM experience. The chat interface will showcase the model’s ability to handle natural language queries and offer an accessible entry point for user interaction.
-    
+
 5. **Optional Advanced Features**
-    
+
     Beyond the core functionality, the server will offer several advanced features to showcase its ability to process input with various models:
-    
+
     - **Embedding Search Using BERT**
-        
+
         This feature will allow users to perform similarity-based searches across a dataset. A preloaded CSV file of topics will be converted into embeddings, and users can submit text queries to find the most relevant topics based on similarity, making it suitable for search and recommendation systems.
-        
+
     - **Text-to-Image Generation**
-        
+
         By integrating a model capable of generating images from text, this feature enables creative applications like visual content creation or design prototyping. Users can submit descriptive text and receive generated images.
-        
+
     - **Question-Answering Model**
-        
+
         A conversational AI feature, similar to systems like ChatGPT, will be included to answer user-submitted questions. This feature would handle tasks such as knowledge retrieval or interactive assistance, allowing users to ask questions and receive relevant answers from the model.
-        
+
     - **Additional Model-Based Capabilities**
-        
+
         Investigate other interesting open-source models that are compatible with Candle, giving users the option to experiment with different functionalities, such as summarization or text classification, and further extending the server’s applicability.
-        
+
 
 ## Tentative Plan
 
