@@ -17,21 +17,20 @@ impl BertInferenceModel {
     pub fn load(
         model_name: &str,
         model_revision: &str,
-        embeddings_filename: &str,
+        embeddings_file: &str,
         embeddings_key: &str,
         device: Device,
     ) -> anyhow::Result<Self> {
-        let embedding_tensor = match embeddings_filename.is_empty() {
+        let embedding_tensor = match embeddings_file.is_empty() {
             true => {
-                // TODO: use log
                 println!("no file name provided, embaddings return an empty tensor");
                 Tensor::new(&[0.0], &device)?
             }
             false => {
-                let tensor_file = safetensors::load(embeddings_filename, &device)?;
+                let tensor_file = safetensors::load(embeddings_file, &device)?;
                 tensor_file
                     .get(embeddings_key)
-                    .expect("error getting key:embedding")
+                    .expect("Failed to retrieve embedding key")
                     .clone()
             }
         };
@@ -43,22 +42,20 @@ impl BertInferenceModel {
             RepoType::Model,
             model_revision.parse()?,
         );
-        let api = Api::new()?;
-        let api = api.repo(repo);
-        let config_filename = api.get("config.json")?;
-        let tokenizer_filename = api.get("tokenizer.json")?;
-        let weights_filename = api.get("model.safetensors")?;
+        let api = Api::new()?.repo(repo);
+        let config_path = api.get("config.json")?;
+        let tokenizer_path = api.get("tokenizer.json")?;
+        let weights_path = api.get("model.safetensors")?;
 
         // load the model config
-        let config = std::fs::read_to_string(config_filename)?;
-        let config: Config = serde_json::from_str(&config)?;
+        let config: Config = serde_json::from_str(&std::fs::read_to_string(config_path)?)?;
 
         //load the tokenizer
-        let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(anyhow::Error::msg)?;
+        let tokenizer = Tokenizer::from_file(tokenizer_path).map_err(anyhow::Error::msg)?;
 
         // load the model
         let variable_builder =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DTYPE, &device)? };
         let model = BertModel::load(variable_builder, &config)?;
         Ok(Self {
             model,
@@ -66,5 +63,70 @@ impl BertInferenceModel {
             device,
             embedding_tensor,
         })
+    }
+
+    pub fn infer_sentence_embedding(&self, sentence: &str) -> anyhow::Result<Tensor> {
+        let tokens = self
+            .tokenizer
+            .encode(sentence, true)
+            .map_err(anyhow::Error::msg)?;
+        let token_ids = Tensor::new(tokens.get_ids(), &self.device)?.unsqueeze(0)?;
+        let token_type_ids = token_ids.zeros_like()?;
+
+        let embeddings = self.model.forward(&token_ids, &token_type_ids)?;
+        let pooled_embedding = Self::apply_max_pooling(&embeddings)?;
+        Ok(Self::l2_normalize(&pooled_embedding)?)
+    }
+
+    pub fn create_embeddings(&self, sentences: Vec<String>) -> anyhow::Result<Tensor> {
+        println!("Generating embeddings for {} sentences", sentences.len());
+        let tokens = self
+            .tokenizer
+            .encode_batch(sentences, true)
+            .map_err(anyhow::Error::msg)?;
+        let token_ids = tokens
+            .iter()
+            .map(|tokens| {
+                let token_vec = tokens.get_ids().to_vec();
+                Ok(Tensor::new(token_vec.as_slice(), &self.device)?)
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let token_ids = Tensor::stack(&token_ids, 0)?;
+        let token_type_ids = token_ids.zeros_like()?;
+        println!("Stacking tokens completed");
+
+        let embeddings = self.model.forward(&token_ids, &token_type_ids)?;
+        let pooled_embeddings = Self::apply_max_pooling(&embeddings)?; // apply pooling (avg or max
+        Ok(Self::l2_normalize(&pooled_embeddings)?)
+    }
+
+    pub fn score_vector_similarity(
+        &self,
+        query_vector: Tensor,
+        top_k: usize,
+    ) -> anyhow::Result<Vec<(usize, f32)>> {
+        let vec_len = self.embedding_tensor.dim(0)?;
+        let mut scores = vec![(0, 0.0); vec_len];
+        for (embedding_index, score_tuple) in scores.iter_mut().enumerate() {
+            let current_embedding = self.embedding_tensor.get(embedding_index)?.unsqueeze(0)?;
+            // because its normalized we can use cosine similarity
+            let cosine_similarity = (&current_embedding * &query_vector)?
+                .sum_all()?
+                .to_scalar::<f32>()?;
+            *score_tuple = (embedding_index, cosine_similarity);
+        }
+        // now we want to sort scores by cosine_similarity
+        scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        // just return the top k
+        scores.truncate(top_k);
+        Ok(scores)
+    }
+
+    pub fn apply_max_pooling(embeddings: &Tensor) -> anyhow::Result<Tensor> {
+        Ok(embeddings.max(1)?)
+    }
+
+    pub fn l2_normalize(embeddings: &Tensor) -> anyhow::Result<Tensor> {
+        Ok(embeddings.broadcast_div(&embeddings.sqr()?.sum_keepdim(1)?.sqrt()?)?)
     }
 }

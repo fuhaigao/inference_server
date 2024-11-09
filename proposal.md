@@ -1,7 +1,6 @@
 # Project Proposal: Large Language Model Serving
 
-Fuhai Gao
-1003887065
+Fuhai Gao (1003887065)
 
 ## Motivation
 
