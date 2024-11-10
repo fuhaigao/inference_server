@@ -14,6 +14,18 @@ struct SimilarityRequest {
     num_results: usize,
 }
 
+#[derive(Deserialize)]
+struct GenerateTextRequest {
+    prompt: String,
+    max_length: usize,
+}
+
+#[derive(Serialize)]
+struct GenerateTextResponse {
+    generated_text: String,
+}
+
+
 #[post("/find_similar")]
 pub async fn find_similar(
     state: web::Data<AppState>,
@@ -41,4 +53,23 @@ pub async fn find_similar(
         )
     }).collect();
     HttpResponse::Ok().json(SimilarityResponse { top_results: results })
+}
+
+#[post("/generate_text")]
+pub async fn generate_text(
+    state: web::Data<AppState>,
+    payload: web::Json<GenerateTextRequest>,
+) -> impl Responder {
+    println!("Generating text for prompt: {}", payload.prompt);
+    let llama_model = &state.llama_model;
+
+    // Generate text using LLaMA model
+    match llama_model.generate_text(&payload.prompt, payload.max_length) {
+        Ok(generated_text) => HttpResponse::Ok().json(GenerateTextResponse { generated_text }),
+        // Err(_) => HttpResponse::InternalServerError().body("Failed to generate text"),
+        Err(e) => {
+            println!("Error: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to generate text")
+        }
+    }
 }
