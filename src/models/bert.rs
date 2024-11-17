@@ -73,7 +73,7 @@ impl BertInferenceModel {
         let token_ids = Tensor::new(tokens.get_ids(), &self.device)?.unsqueeze(0)?;
         let token_type_ids = token_ids.zeros_like()?;
 
-        let embeddings = self.model.forward(&token_ids, &token_type_ids)?;
+        let embeddings = self.model.forward(&token_ids, &token_type_ids, None)?;
         let pooled_embedding = Self::apply_max_pooling(&embeddings)?;
         Ok(Self::l2_normalize(&pooled_embedding)?)
     }
@@ -95,7 +95,7 @@ impl BertInferenceModel {
         let token_type_ids = token_ids.zeros_like()?;
         println!("Stacking tokens completed");
 
-        let embeddings = self.model.forward(&token_ids, &token_type_ids)?;
+        let embeddings = self.model.forward(&token_ids, &token_type_ids, None)?;
         let pooled_embeddings = Self::apply_max_pooling(&embeddings)?; // apply pooling (avg or max
         Ok(Self::l2_normalize(&pooled_embeddings)?)
     }
@@ -115,9 +115,8 @@ impl BertInferenceModel {
                 .to_scalar::<f32>()?;
             *score_tuple = (embedding_index, cosine_similarity);
         }
-        // now we want to sort scores by cosine_similarity
+        // sort scores by cosine_similarity
         scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        // just return the top k
         scores.truncate(top_k);
         Ok(scores)
     }

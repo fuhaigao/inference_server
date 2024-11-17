@@ -1,11 +1,17 @@
 // API routes and handlers
+use crate::state::AppState;
 use actix_web::{post, web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
-use crate::state::AppState;
+
+#[derive(Serialize)]
+pub struct TopResult {
+    item: String,
+    score: f32,
+}
 
 #[derive(Serialize)]
 pub struct SimilarityResponse {
-    top_results: Vec<String>,
+    top_results: Vec<TopResult>,
 }
 
 #[derive(Deserialize)]
@@ -25,7 +31,6 @@ struct GenerateTextResponse {
     generated_text: String,
 }
 
-
 #[post("/find_similar")]
 pub async fn find_similar(
     state: web::Data<AppState>,
@@ -40,19 +45,22 @@ pub async fn find_similar(
         Err(_) => return HttpResponse::InternalServerError().body("Failed to generate embedding"),
     };
 
-    let results: Vec<(usize, f32)> = bert_model.score_vector_similarity(
-        query_embedding,
-        payload.num_results as usize,
-    ).unwrap();
+    let results: Vec<(usize, f32)> = bert_model
+        .score_vector_similarity(query_embedding, payload.num_results as usize)
+        .unwrap();
 
-    let results: Vec<String> = results.into_iter().map(|record| {
-        let top_item_text = text_map.get(record.0).unwrap();
-        format!(
-            "Item:{} (index: {} score:{:?})",
-            top_item_text, record.0, record.1
-        )
-    }).collect();
-    HttpResponse::Ok().json(SimilarityResponse { top_results: results })
+    let top_results: Vec<TopResult> = results
+        .into_iter()
+        .map(|record| {
+            let top_item_text = text_map.get(record.0).unwrap();
+            TopResult {
+                item: top_item_text.to_string(),
+                score: record.1,
+            }
+        })
+        .collect();
+
+    HttpResponse::Ok().json(SimilarityResponse { top_results })
 }
 
 #[post("/generate_text")]
@@ -66,7 +74,6 @@ pub async fn generate_text(
     // Generate text using LLaMA model
     match llama_model.generate_text(&payload.prompt, payload.max_length) {
         Ok(generated_text) => HttpResponse::Ok().json(GenerateTextResponse { generated_text }),
-        // Err(_) => HttpResponse::InternalServerError().body("Failed to generate text"),
         Err(e) => {
             println!("Error: {:?}", e);
             HttpResponse::InternalServerError().body("Failed to generate text")

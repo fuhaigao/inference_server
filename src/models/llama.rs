@@ -1,11 +1,10 @@
-use candle::{DType, Device, IndexOp, Tensor};
-use candle_nn::ops::softmax;
+use candle::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::llama as model;
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
-use model::{Llama, LlamaConfig};
+use model::{Config, Llama, LlamaConfig};
 use tokenizers::Tokenizer;
 
 const EOS_TOKEN: &str = "</s>";
@@ -14,6 +13,7 @@ pub struct LlamaInferenceModel {
     model: Llama,
     tokenizer: Tokenizer,
     device: Device,
+    config: Config,
 }
 
 impl LlamaInferenceModel {
@@ -38,22 +38,22 @@ impl LlamaInferenceModel {
 
         // Parse LLaMA configuration
         let config: LlamaConfig = serde_json::from_slice(&std::fs::read(config_filename)?)?;
-        // false to disable flash_attn optimization, which apple chip does not support
+        // using false to disable flash_attn optimization, which apple chip does not support
         let config = config.into_config(false);
 
         // Load weights
         let filenames = [
-            "model-00001-of-00002.safetensors",
-            "model-00002-of-00002.safetensors",
-            // "model.safetensors",
+            // "model-00001-of-00002.safetensors",
+            // "model-00002-of-00002.safetensors",
+            "model.safetensors",
         ]
         .iter()
         .map(|&filename| repo.get(filename))
         .collect::<Result<Vec<_>, _>>()?;
 
+        // Load the model
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, DType::F32, &device)? };
-        let cache = model::Cache::new(true, DType::F32, &config, &device)?;
-        let model = Llama::load(vb, &cache, &config)?;
+        let model = Llama::load(vb, &config)?;
 
         // Load the tokenizer
         let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(|e| anyhow::anyhow!(e))?;
@@ -62,10 +62,13 @@ impl LlamaInferenceModel {
             model,
             tokenizer,
             device,
+            config,
         })
     }
 
     pub fn generate_text(&self, prompt: &str, max_length: usize) -> anyhow::Result<String> {
+        // Use cache to speed up the generation, first parameter 'true' means to use key-value cache
+        let mut cache = model::Cache::new(true, DType::F32, &self.config, &self.device)?;
         let mut tokens = self
             .tokenizer
             .encode(prompt, true)
@@ -78,32 +81,43 @@ impl LlamaInferenceModel {
         println!("EOS token ID: {:?}", eos_token_id);
 
         let seed = 42;
-        let mut logits_processor = LogitsProcessor::new(seed, Some(1.0), Some(0.9)); // Wrapping values in Some()
+        // let temperature = Some(0.8);
+        // let top_p = Some(0.7);
+        // let mut logits_processor = LogitsProcessor::new(seed, temperature, top_p);
+
+        // Use simple sampling
+        let mut logits_processor = LogitsProcessor::new(seed, None, None);
         let start_gen = std::time::Instant::now();
         let mut index_pos = 0;
         let mut generated_text = String::new();
 
-        for index in 0..max_length {
-            // Limit the context size for each forward pass
-            let context_size = if index > 0 { 1 } else { tokens.len() };
+        for index in (0..max_length) {
+            // Determine the context size and index for the current token
+            let (context_size, context_index) = if index > 0 {
+                (1, index_pos)
+            } else {
+                (tokens.len(), 0)
+            };
+
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
             let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
 
-            // Forward pass through the model
-            let logits = self.model.forward(&input, index_pos)?.squeeze(0)?;
+            let logits = self
+                .model
+                .forward(&input, context_index, &mut cache)?
+                .squeeze(0)?;
+
+            // Update the index position
             index_pos += ctxt.len();
 
-            // Sample the next token
             let next_token = logits_processor.sample(&logits)?;
             tokens.push(next_token);
 
-            // Convert token to text and append it to the generated text
             if let Some(text) = self.tokenizer.id_to_token(next_token) {
                 let formatted_text = text.replace('▁', " ").replace("<0x0A>", "\n");
                 generated_text.push_str(&formatted_text);
             }
 
-            // Check for end-of-sequence token
             if Some(next_token) == eos_token_id {
                 println!("EOS token found");
                 break;
