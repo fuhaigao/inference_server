@@ -2,18 +2,22 @@ use candle::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use candle_transformers::models::llama as model;
+use futures::stream::{self, BoxStream};
+use futures::StreamExt;
 use hf_hub::api::sync::ApiBuilder;
 use hf_hub::{Repo, RepoType};
 use model::{Config, Llama, LlamaConfig};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tokenizers::Tokenizer;
 
 const EOS_TOKEN: &str = "</s>";
 
 pub struct LlamaInferenceModel {
-    model: Llama,
-    tokenizer: Tokenizer,
-    device: Device,
-    config: Config,
+    pub model: Llama,
+    pub tokenizer: Tokenizer,
+    pub device: Device,
+    pub config: Config,
 }
 
 impl LlamaInferenceModel {
@@ -111,10 +115,12 @@ impl LlamaInferenceModel {
             index_pos += ctxt.len();
 
             let next_token = logits_processor.sample(&logits)?;
+            println!("next_token: {:?}", next_token);
             tokens.push(next_token);
 
             if let Some(text) = self.tokenizer.id_to_token(next_token) {
                 let formatted_text = text.replace('▁', " ").replace("<0x0A>", "\n");
+                println!("formatted_text: {:?}", formatted_text);
                 generated_text.push_str(&formatted_text);
             }
 
@@ -133,5 +139,258 @@ impl LlamaInferenceModel {
         println!("Generated text: {:?}", generated_text);
 
         Ok(generated_text)
+    }
+
+    // pub fn generate_text_stream(
+    //     &self,
+    //     prompt: &str,
+    //     max_length: usize,
+    // ) -> anyhow::Result<BoxStream<'static, Result<String, anyhow::Error>>> {
+    //     let cache = model::Cache::new(true, DType::F32, &self.config, &self.device)?;
+    //     let initial_tokens = self
+    //         .tokenizer
+    //         .encode(prompt, true)
+    //         .map_err(|e| anyhow::anyhow!(e))?
+    //         .get_ids()
+    //         .to_vec();
+    //     println!("Initial Tokens: {:?}", initial_tokens);
+
+    //     let eos_token_id = self.tokenizer.token_to_id("</s>");
+    //     println!("EOS Token ID: {:?}", eos_token_id);
+
+    //     let seed = 42;
+    //     let logits_processor = LogitsProcessor::new(seed, None, None);
+    //     let device = self.device.clone();
+    //     let model = self.model.clone();
+    //     let tokenizer = self.tokenizer.clone();
+
+    //     // Create a stream using `stream::unfold`
+    //     let stream = stream::unfold(
+    //         (initial_tokens, cache, logits_processor, 0, 0), // tokens, cache, logits_processor, index, index_pos
+    //         move |(mut tokens, mut cache, mut logits_processor, index, mut index_pos)| {
+    //             let device = device.clone();
+    //             let model = model.clone();
+    //             let tokenizer = tokenizer.clone();
+
+    //             async move {
+    //                 if index >= max_length {
+    //                     return None;
+    //                 }
+
+    //                 // Determine context size and context index
+    //                 let (context_size, context_index) = if index > 0 {
+    //                     (1, index_pos) // Single token for subsequent steps
+    //                 } else {
+    //                     (tokens.len(), 0) // Full context for the first step
+    //                 };
+
+    //                 let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
+    //                 let input = Tensor::new(ctxt, &device).ok()?.unsqueeze(0).ok()?;
+
+    //                 // Perform forward pass
+    //                 let logits = model
+    //                     .forward(&input, context_index, &mut cache)
+    //                     .ok()?
+    //                     .squeeze(0)
+    //                     .ok()?;
+
+    //                 // Update index_pos with the context size
+    //                 index_pos += ctxt.len();
+
+    //                 // Sample the next token
+    //                 let next_token = logits_processor.sample(&logits).ok()?;
+    //                 tokens.push(next_token);
+
+    //                 // Check for EOS token
+    //                 if Some(next_token) == eos_token_id {
+    //                     println!("EOS token found");
+    //                     return Some((
+    //                         Ok("EOS".to_string()),
+    //                         (tokens, cache, logits_processor, index + 1, index_pos),
+    //                     ));
+    //                 }
+
+    //                 // Decode the next token into text
+    //                 let formatted_text = tokenizer
+    //                     .id_to_token(next_token)
+    //                     .unwrap_or_default()
+    //                     .replace('▁', " ")
+    //                     .replace("<0x0A>", "\n");
+    //                 println!("Generated token: {}", formatted_text);
+
+    //                 Some((
+    //                     Ok(formatted_text),
+    //                     (tokens, cache, logits_processor, index + 1, index_pos),
+    //                 ))
+    //             }
+    //         },
+    //     );
+
+    //     Ok(Box::pin(stream))
+    // }
+
+    pub fn generate_text_stream(
+        &self,
+        prompt: &str,
+        max_length: usize,
+    ) -> anyhow::Result<BoxStream<'static, Result<String, anyhow::Error>>> {
+        let cache = model::Cache::new(true, DType::F32, &self.config, &self.device)?;
+        let initial_tokens = self
+            .tokenizer
+            .encode(prompt, true)
+            .map_err(|e| anyhow::anyhow!(e))?
+            .get_ids()
+            .to_vec();
+        println!("Initial Tokens: {:?}", initial_tokens);
+
+        let eos_token_id = self.tokenizer.token_to_id("</s>");
+        println!("EOS Token ID: {:?}", eos_token_id);
+
+        let seed = 42;
+        let logits_processor = LogitsProcessor::new(seed, None, None);
+        let device = self.device.clone();
+        let model = self.model.clone();
+        let tokenizer = self.tokenizer.clone();
+
+        // Create a stream
+        let stream = async_stream::stream! {
+            let mut tokens = initial_tokens;
+            let mut cache = cache;
+            let mut logits_processor = logits_processor;
+            let mut index = 0;
+            let mut index_pos = 0;
+
+            loop {
+                if index >= max_length {
+                    break;
+                }
+
+                // Determine context size and context index
+                let (context_size, context_index) = if index > 0 {
+                    (1, index_pos) // Single token for subsequent steps
+                } else {
+                    (tokens.len(), 0) // Full context for the first step
+                };
+
+                let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
+                let input = match Tensor::new(ctxt, &device)
+                    .ok()
+                    .and_then(|t| t.unsqueeze(0).ok())
+                {
+                    Some(input) => input,
+                    None => {
+                        yield Err(anyhow::anyhow!("Failed to create input tensor"));
+                        break;
+                    }
+                };
+
+                // Perform forward pass
+                let logits = match model
+                    .forward(&input, context_index, &mut cache)
+                    .ok()
+                    .and_then(|t| t.squeeze(0).ok())
+                {
+                    Some(logits) => logits,
+                    None => {
+                        yield Err(anyhow::anyhow!("Failed to perform forward pass"));
+                        break;
+                    }
+                };
+
+                // Update index_pos with the context size
+                index_pos += ctxt.len();
+
+                // Sample the next token
+                let next_token = match logits_processor.sample(&logits).ok() {
+                    Some(token) => token,
+                    None => {
+                        yield Err(anyhow::anyhow!("Failed to sample next token"));
+                        break;
+                    }
+                };
+                tokens.push(next_token);
+
+                // Check for EOS token
+                if Some(next_token) == eos_token_id {
+                    println!("EOS token found");
+                    yield Ok("EOS".to_string());
+                    break;
+                }
+
+                // Decode the next token into text
+                let formatted_text = tokenizer
+                    .id_to_token(next_token)
+                    .unwrap_or_default()
+                    .replace('▁', " ")
+                    .replace("<0x0A>", "\n");
+                println!("Generated token: {}", formatted_text);
+
+                yield Ok(formatted_text);
+
+                index += 1;
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+
+    // Method to encode the prompt into initial tokens
+    pub fn encode_prompt(&self, prompt: &str) -> anyhow::Result<Vec<u32>> {
+        self.tokenizer
+            .encode(prompt, true)
+            .map_err(|e| anyhow::anyhow!(e))
+            .map(|encoded| encoded.get_ids().to_vec())
+    }
+
+    // Method to create a cache
+    pub fn create_cache(&self) -> anyhow::Result<model::Cache> {
+        model::Cache::new(true, DType::F32, &self.config, &self.device)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    // Method to create a logits processor
+    pub fn create_logits_processor(&self, seed: u64) -> LogitsProcessor {
+        LogitsProcessor::new(seed, None, None)
+    }
+
+    // Method to perform a forward pass and return the next token
+    pub fn generate_next_token(
+        &self,
+        ctxt: &[u32],
+        context_index: usize,
+        cache: &mut model::Cache,
+        logits_processor: &mut LogitsProcessor,
+    ) -> anyhow::Result<u32> {
+        let input = Tensor::new(ctxt, &self.device)
+            .ok()
+            .and_then(|t| t.unsqueeze(0).ok())
+            .ok_or_else(|| anyhow::anyhow!("Failed to create input tensor"))?;
+
+        let logits = self
+            .model
+            .forward(&input, context_index, cache)
+            .ok()
+            .and_then(|t| t.squeeze(0).ok())
+            .ok_or_else(|| anyhow::anyhow!("Failed to perform forward pass"))?;
+
+        let next_token = logits_processor.sample(&logits)?;
+        return Ok(next_token);
+        // logits_processor
+        //     .sample(&logits)
+        //     .ok_or_else(|| anyhow::anyhow!("Failed to sample next token"))
+    }
+
+    // Method to decode a token ID into text
+    pub fn decode_token(&self, token_id: u32) -> String {
+        self.tokenizer
+            .id_to_token(token_id)
+            .unwrap_or_default()
+            .replace('▁', " ")
+            .replace("<0x0A>", "\n")
+    }
+
+    // Method to get the EOS token ID
+    pub fn eos_token_id(&self) -> Option<u32> {
+        self.tokenizer.token_to_id("</s>")
     }
 }
