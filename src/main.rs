@@ -1,11 +1,8 @@
 // Web server entry point
 use crate::api::{find_similar, generate_text, generate_text_stream};
 use crate::state::AppState;
-use actix_cors::Cors;
 use actix_files as fs;
-use actix_web::dev::ServiceRequest;
-use actix_web::http::header::ACCEPT_ENCODING;
-use actix_web::{middleware::Compress, web, App, HttpServer};
+use actix_web::{web, App, HttpServer};
 use candle::Device;
 use env_logger;
 use inference_server::models::bert::BertInferenceModel;
@@ -58,24 +55,6 @@ async fn main() -> std::io::Result<()> {
 
     // Start the HTTP server
     println!("Starting HTTP server on 0.0.0.0:8080...");
-    // HttpServer::new(move || {
-    //     App::new()
-    //         .wrap(
-    //             Cors::default()
-    //                 .allow_any_origin()
-    //                 .allow_any_method()
-    //                 .allow_any_header()
-    //                 .max_age(3600),
-    //         )
-    //         .app_data(web::Data::new(shared_state.clone()))
-    //         .service(find_similar)
-    //         .service(generate_text)
-    //         .service(generate_text_stream)
-    //         .service(fs::Files::new("/", "./frontend/build").index_file("index.html"))
-    // })
-    // .bind(("0.0.0.0", 8080))?
-    // .run()
-    // .await
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(shared_state.clone()))

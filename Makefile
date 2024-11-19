@@ -7,7 +7,7 @@ all: up
 
 # Build the frontend and backend
 build:
-	cd $(FRONTEND_DIR) && npm run build
+	cd $(FRONTEND_DIR) && npm install && npm run build
 	cargo build
 
 # Clean the project dependencies
@@ -23,3 +23,7 @@ up: build
 
 # restart the application
 restart: clean up
+
+# Run the application without re-compiling
+start:
+	cargo run --bin $(BINARY_NAME)

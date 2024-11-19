@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { generateText, findSimilar, TopResult } from "./api";
 
 function App() {
@@ -9,57 +9,14 @@ function App() {
   >("generate_text");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
-  useEffect(() => {
-    console.log("output", output);
-  }, [output]);
-
-  // const handleSubmit = async () => {
-  //   if (input.trim() === "") return;
-  //   setOutput("Processing...");
-  //   try {
-  //     if (mode === "generate_text_stream") {
-  //       setOutput(""); // Clear previous output
-
-  //       const eventSource = new EventSource(
-  //         `http://localhost:8080/generate_text_stream?prompt=${encodeURIComponent(input)}&max_length=20&timestamp=${Date.now()}`,
-  //       );
-
-  //       eventSource.onmessage = (event) => {
-  //         console.log("Received event:", event.data);
-  //         if (event.data === "EOS") {
-  //           console.log("End of stream");
-  //           eventSource.close();
-  //         } else {
-  //           setOutput((prevOutput) => prevOutput + event.data);
-  //         }
-  //       };
-
-  //       eventSource.onerror = (error) => {
-  //         console.error("EventSource failed:", error);
-  //         eventSource.close();
-  //         setOutput("An error occurred while streaming the text.");
-  //       };
-  //     } else if (mode === "generate_text") {
-  //       const result = await generateText(input);
-  //       setOutput(result);
-  //     } else {
-  //       const results = await findSimilar(input);
-  //       setOutput(results);
-  //     }
-  //   } catch (error) {
-  //     setOutput("An error occurred while processing your request.");
-  //     console.error(error);
-  //   }
-  // };
-
   const handleSubmit = async () => {
     if (input.trim() === "") return;
     setOutput("Processing...");
     try {
       if (mode === "generate_text_stream") {
-        setOutput(""); // Clear previous output
+        setOutput("");
 
-        // Use fetch for POST request
+        // Send post request to fetch the streaming response
         const response = await fetch(
           "http://localhost:8080/generate_text_stream",
           {
@@ -69,7 +26,7 @@ function App() {
             },
             body: JSON.stringify({
               prompt: input,
-              max_length: 20,
+              max_length: 20, // hard-coded to 20 for demo purposes
             }),
           },
         );
@@ -102,13 +59,16 @@ function App() {
           buffer += decoder.decode(value, { stream: true });
 
           let boundary;
+          // streaming response is formatted as "data: <data>\n\n"
           while ((boundary = buffer.indexOf("\n\n")) !== -1) {
             const chunk = buffer.slice(0, boundary); // Extract the complete message
             buffer = buffer.slice(boundary + 2); // Remove the processed part
 
-            if (chunk.startsWith("data: ")) {
+            // special case for chunk with one newline character (\n)
+            if (chunk === "data: \ndata: ") {
+              setOutput((prevOutput) => prevOutput + "\n");
+            } else if (chunk.startsWith("data: ")) {
               const data = chunk.slice(6); // Strip the "data: " prefix
-              console.log("Received event:", data);
 
               if (data === "EOS") {
                 console.log("End of stream");

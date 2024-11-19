@@ -1,18 +1,13 @@
 use crate::state::AppState;
-use actix_web::http::header::HeaderValue;
-use actix_web::rt::time::interval;
-use actix_web::web::Bytes;
-use actix_web::{post, web, HttpResponse, Responder};
-use actix_web_lab::sse;
-use anyhow::Error;
-use futures::StreamExt;
-use futures_util::stream::Stream;
+use actix_web::http::header::{HeaderValue, CACHE_CONTROL};
+use actix_web::HttpRequest;
+use actix_web::{web, HttpResponse, Responder};
+use actix_web_lab::sse::{self, Data, Event};
+use inference_server::models::llama::generate_next_token;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 #[derive(Serialize)]
 pub struct TopResult {
@@ -42,7 +37,6 @@ pub struct GenerateTextResponse {
     generated_text: String,
 }
 
-// #[post("/find_similar")]
 pub async fn find_similar(
     state: web::Data<AppState>,
     payload: web::Json<SimilarityRequest>,
@@ -78,7 +72,6 @@ pub async fn find_similar(
     HttpResponse::Ok().json(SimilarityResponse { top_results })
 }
 
-// #[post("/generate_text")]
 pub async fn generate_text(
     state: web::Data<AppState>,
     payload: web::Json<GenerateTextRequest>,
@@ -93,85 +86,8 @@ pub async fn generate_text(
     }
 }
 
-// #[post("/generate_text_stream")]
-// pub async fn generate_text_stream(
-//     state: web::Data<AppState>,
-//     payload: web::Json<GenerateTextRequest>,
-// ) -> impl Responder {
-//     let llama_model = Arc::clone(&state.llama_model);
-//     let prompt = payload.prompt.clone();
-//     let max_length = payload.max_length;
-
-//     type MsgResult = Result<sse::Event, Error>;
-//     let (tx, rx) = mpsc::channel::<MsgResult>(100);
-
-//     tokio::spawn(async move {
-//         match llama_model.generate_text_stream(&prompt, max_length) {
-//             Ok(stream) => {
-//                 let mut pinned_stream = Box::pin(stream);
-
-//                 while let Some(result) = pinned_stream.next().await {
-//                     match result {
-//                         Ok(word) => {
-//                             if tx
-//                                 .send(Ok(sse::Event::Data(sse::Data::new(word))))
-//                                 .await
-//                                 .is_err()
-//                             {
-//                                 break;
-//                             }
-//                         }
-//                         Err(e) => {
-//                             let _ = tx.send(Err(e.into())).await;
-//                             break;
-//                         }
-//                     }
-//                 }
-//             }
-//             Err(e) => {
-//                 let _ = tx.send(Err(e.into())).await;
-//             }
-//         }
-//     });
-
-//     sse::Sse::from_receiver(rx).with_keep_alive(Duration::from_secs(5))
-// }
-
-// pub async fn generate_text_stream(
-//     state: web::Data<AppState>,
-//     payload: web::Json<GenerateTextRequest>,
-// ) -> impl Responder {
-//     println!("Streaming text for prompt: {}", payload.prompt);
-//     let llama_model = &state.llama_model;
-
-//     // Call the generate_text_stream function to get the stream
-//     match llama_model.generate_text_stream(&payload.prompt, payload.max_length) {
-//         Ok(token_stream) => {
-//             let event_stream = token_stream.map(|result| match result {
-//                 Ok(token) => {
-//                     // Convert the string token into Bytes
-//                     let message = format!("data: {}\n\n", token);
-//                     Ok::<_, actix_web::Error>(Bytes::from(message))
-//                 }
-//                 Err(e) => {
-//                     eprintln!("Error generating token: {:?}", e);
-//                     Ok::<_, actix_web::Error>(Bytes::from("data: [Error]\n\n"))
-//                 }
-//             });
-
-//             HttpResponse::Ok()
-//                 .content_type("text/event-stream")
-//                 .insert_header(("X-Accel-Buffering", HeaderValue::from_static("no")))
-//                 .streaming(event_stream)
-//         }
-//         Err(e) => {
-//             eprintln!("Failed to create stream: {:?}", e);
-//             HttpResponse::InternalServerError().body("Failed to create text stream")
-//         }
-//     }
-// }
-
 pub async fn generate_text_stream(
+    req: HttpRequest,
     state: web::Data<AppState>,
     payload: web::Json<GenerateTextRequest>,
 ) -> impl Responder {
@@ -191,28 +107,33 @@ pub async fn generate_text_stream(
     let eos_token_id = llama_model.eos_token_id();
     println!("EOS Token ID: {:?}", eos_token_id);
 
-    //TODO: remove this interval
-    let mut interval = interval(Duration::from_secs(1));
-    let stream = async_stream::stream! {
+    // Create a channel for sending SSE events
+    let (tx, rx) = tokio::sync::mpsc::channel(10);
+
+    // Spawn a task to generate tokens and send them as SSE events
+    actix_web::rt::spawn(async move {
         let mut tokens = initial_tokens;
-        let mut cache = match llama_model.create_cache() {
-            Ok(cache) => cache,
+        // Initialize cache
+        let cache = match llama_model.create_cache() {
+            Ok(c) => Arc::new(Mutex::new(c)),
             Err(e) => {
-                yield Ok::<_, actix_web::Error>(Bytes::from("Error creating cache\n\n"));
-                return;
+                eprintln!("Error creating cache: {:?}", e);
+                // Handle the error appropriately, e.g., send an error message through the channel
+                if let Err(send_err) = tx.send(Event::Comment("Error creating cache".into())).await
+                {
+                    eprintln!("Failed to send error message: {:?}", send_err);
+                }
+                return; // Exit the async block early
             }
         };
-        let mut logits_processor = llama_model.create_logits_processor(42);
+
+        // Initialize logits_processor
+        let logits_processor = Arc::new(Mutex::new(llama_model.create_logits_processor(42)));
+
         let mut index = 0;
         let mut index_pos = 0;
 
         loop {
-            // Immediately yield a hardcoded message for debugging
-            // interval.tick().await;
-            // let data = format!("data: {}\n\n", "This is a hardcoded message");
-            // println!("@@@Data: {}", data);
-            // yield Ok::<_, actix_web::Error>(Bytes::from(data));
-
             if index >= payload.max_length {
                 break;
             }
@@ -225,12 +146,21 @@ pub async fn generate_text_stream(
 
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
 
-            // Generate the next token
-            let next_token = match llama_model.generate_next_token(ctxt, context_index, &mut cache, &mut logits_processor) {
+            let next_token = match generate_next_token(
+                Arc::clone(&llama_model),
+                ctxt.to_vec(),
+                context_index,
+                Arc::clone(&cache),
+                Arc::clone(&logits_processor),
+            )
+            .await
+            {
                 Ok(token) => token,
                 Err(e) => {
                     eprintln!("Error generating next token: {:?}", e);
-                    yield Ok::<_, actix_web::Error>(Bytes::from("Error generating next token\n\n"));
+                    let _ = tx
+                        .send(Event::Comment("Error generating next token".into()))
+                        .await;
                     break;
                 }
             };
@@ -241,33 +171,30 @@ pub async fn generate_text_stream(
             // Check for EOS token
             if Some(next_token) == eos_token_id {
                 println!("EOS token found");
-                yield Ok::<_, actix_web::Error>(Bytes::from("data: EOS\n\n"));
+                let _ = tx.send(Event::Data(Data::new("EOS"))).await;
                 break;
             }
 
             let formatted_text = llama_model.decode_token(next_token);
-            println!("Generated token: {}", formatted_text);
+            println!("Generated token: {:?}", formatted_text);
 
-            let message = format!("data: {}\n\n\n", formatted_text);
-            println!("Message: {}", message);
-            yield Ok::<_, actix_web::Error>(Bytes::from(message));
-            // Explicitly flush the response
-            yield Ok::<_, actix_web::Error>(Bytes::new());
+            let message = Event::Data(Data::new(formatted_text));
+            if tx.send(message).await.is_err() {
+                // Client disconnected
+                break;
+            }
 
             index += 1;
             index_pos += context_size;
         }
+    });
 
-    };
-
-    let boxed_stream: Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>> =
-        Box::pin(stream);
-
-    HttpResponse::Ok()
-        .content_type("text/event-stream")
-        .insert_header(("Content-Encoding", "identity"))
-        .insert_header(("Cache-Control", "no-transform"))
-        .insert_header(("X-Content-Type-Options", "nosniff"))
-        .insert_header(("X-Accel-Buffering", HeaderValue::from_static("no")))
-        .streaming(boxed_stream)
+    // Return the SSE response
+    sse::Sse::from_infallible_receiver(rx)
+        .with_keep_alive(Duration::from_secs(10)) // Optional: send keep-alive comments every 10 seconds
+        .customize()
+        .insert_header((CACHE_CONTROL, HeaderValue::from_static("no-transform")))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .respond_to(&req)
+        .map_into_boxed_body()
 }
