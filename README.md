@@ -20,3 +20,8 @@
 - Text Generation can be slower than expected due to one of the following reasons:
   1. since it is runing on CPU, it depends on the CPU performance on your machine, restarting your machine might help.
   2. In `Cargo.toml`, Im removing `features = ["accelerate"]` for `candle-transformers`, which is only supported on MacOS. If you are using MacOS, you can add it back to speed up the inference.
+
+## Demo
+<video src="assets/demo.mp4" controls="controls" style="max-width: 100%; height: auto;">
+  Your browser does not support the video tag.
+</video>
