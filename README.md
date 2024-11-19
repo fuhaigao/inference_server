@@ -22,6 +22,4 @@
   2. In `Cargo.toml`, Im removing `features = ["accelerate"]` for `candle-transformers`, which is only supported on MacOS. If you are using MacOS, you can add it back to speed up the inference.
 
 ## Demo
-<video src="assets/demo.mp4" controls="controls" style="max-width: 100%; height: auto;">
-  Your browser does not support the video tag.
-</video>
+[Watch Demo Video](assets/demo.mp4)
