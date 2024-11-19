@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 candle = { version = "0.8.0", package = "candle-core" }
-# candle-transformers = { version = "0.3", features = ["accelerate"], default-features = false }
-candle-transformers = { version = "0.8.0", features = ["accelerate"], default-features = false }
+# candle-transformers = { version = "0.8.0", features = ["accelerate"], default-features = false }
+candle-transformers = { version = "0.8.0", default-features = false }
 candle-nn = "0.8.0"
 tokenizers = "0.15.0"
 hf-hub = "0.3.2"
