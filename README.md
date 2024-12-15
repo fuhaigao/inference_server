@@ -21,5 +21,5 @@
   1. since it is runing on CPU, it depends on the CPU performance on your machine, restarting your machine might help.
   2. In `Cargo.toml`, Im removing `features = ["accelerate"]` for `candle-transformers`, which is only supported on MacOS Apple Chip. If you are using MacOS, you can add it back to speed up the inference.
 
-## Demo
+## Video Demo
 [Watch Demo Video](https://youtu.be/4hECkvr1ltE)
